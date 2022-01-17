@@ -1,0 +1,88 @@
+parameters:
+- name: bicepPath       # [REQUIRED] The relative path to the bicep entry point (main.bicep)
+  type: string
+- name: targetRg        # [REQUIRED] The target resource group
+  type: string
+
+
+variables:
+- name: bicepPath
+  value: $(Build.SourcesDirectory)/${{ parameters.bicepPath }}
+- name: artifactName
+  value: templates
+- name: armServiceConn
+  ${{ if eq(variables['System.TeamProject'], 'devops-core') }}:
+    value: devopscore-arm-dev
+  ${{ if ne(variables['System.TeamProject'], 'devops-core') }}:
+    value: devopscore-arm-dev-$(System.TeamProject)
+- name: rgLocation
+  value: centralus
+
+stages:
+- stage: BuildStage
+  displayName: Build
+  jobs:
+  - job: BuildAndPublish
+    displayName: Build
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - script: |
+        az bicep build \
+          --file ${{ variables.bicepPath }}/main.bicep \
+          --outdir $(Build.ArtifactStagingDirectory)
+      displayName: Build ARM Template
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: ${{ variables.bicepPath }}/parameters
+        Contents: "*.json"
+        TargetFolder: $(build.artifactstagingdirectory)
+    - task: PublishBuildArtifacts@1
+      displayName: Publish Artifact
+      inputs:
+        PathtoPublish: $(Build.ArtifactStagingDirectory)
+        ArtifactName: $(artifactName)
+        publishLocation: Container
+
+- stage: DeployDev
+  displayName: DEV Deployment
+  dependsOn:
+  - BuildStage
+  pool:
+    vmImage: ubuntu-latest
+  jobs:
+  - deployment: DeployArm
+    displayName: Deploy ARM Template
+    continueOnError: false
+    environment: dev
+    variables:
+    - name: resourceGroupName
+      value: dev-${{ parameters.targetRg }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureCLI@2
+            displayName: Create Resource Group
+            inputs:
+              azureSubscription: ${{ variables.armServiceConn }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az group create \
+                  --name ${{ variables.resourceGroupName }} \
+                  --location ${{ variables.rgLocation }} \
+                  --tags team='$(System.TeamProject)'
+          - task: AzureCLI@2
+            displayName: Deploy ARM Template
+            inputs:
+              azureSubscription: ${{ variables.armServiceConn }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az group deployment create \
+                  --name "$(Build.DefinitionName)_$(Build.BuildNumber)" \
+                  --resource-group ${{ variables.resourceGroupName }} \
+                  --template-file $(Agent.BuildDirectory)/${{ variables.artifactName }}/main.json \
+                  --parameters $(Agent.BuildDirectory)/${{ variables.artifactName }}/main.parameters.json \
+                  --parameters $(Agent.BuildDirectory)/${{ variables.artifactName }}/dev.parameters.json

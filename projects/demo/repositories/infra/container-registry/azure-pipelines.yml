@@ -1,0 +1,12 @@
+resources:
+  repositories:
+  - repository: core
+    type: git
+    name: devops-core/pipeline
+    ref: main
+
+extends:
+  template: entry-point/bicep-deployment.yml@core
+  parameters:
+    bicepPath: container-registry
+    targetRg: demo
